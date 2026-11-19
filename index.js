@@ -16,7 +16,33 @@ app.use(cors());
 
 const upload = multer({
   storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+  },
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype.startsWith("image/")) {
+      return cb(new Error("Only image files are allowed"));
+    }
+
+    cb(null, true);
+  },
 });
+
+const uploadServiceImage = (req, res, next) => {
+  upload.single("image")(req, res, (error) => {
+    if (error) {
+      return res.status(400).send({
+        success: false,
+        message:
+          error.code === "LIMIT_FILE_SIZE"
+            ? "Image must be less than 5MB"
+            : error.message || "Invalid image upload",
+      });
+    }
+
+    next();
+  });
+};
 
 // ===============================
 // MongoDB Connection
@@ -141,19 +167,109 @@ app.get('/services', async (req, res) => {
 // Add Service
 // ===============================
 
-app.post('/services', async (req, res) => {
+// ===============================
+// Add Service + Upload Image
+// ===============================
+
+app.post('/services', uploadServiceImage, async (req, res) => {
   try {
     const service = req.body;
+
+    // ===============================
+    // Check required fields
+    // ===============================
+
+    if (
+      !service.title ||
+      !service.category ||
+      !service.description ||
+      !service.serviceArea ||
+      !service.price
+    ) {
+      return res.status(400).send({
+        success: false,
+        message: "Required service information is missing",
+      });
+    }
+
+    // ===============================
+    // Check image
+    // ===============================
+
+    if (!req.file) {
+      return res.status(400).send({
+        success: false,
+        message: "Service image is required",
+      });
+    }
+
+    // ===============================
+    // Upload Image to ImgBB
+    // ===============================
+
+    const imgbbKey = process.env.IMGBB_API_KEY;
+
+    if (!imgbbKey) {
+      return res.status(500).send({
+        success: false,
+        message: "ImgBB is not configured on the server",
+      });
+    }
+
+    const formData = new FormData();
+
+    formData.append(
+      "image",
+      req.file.buffer.toString("base64")
+    );
+
+    const imageResponse = await fetch(
+      `https://api.imgbb.com/1/upload?key=${imgbbKey}`,
+      {
+        method: "POST",
+        body: formData,
+      }
+    );
+
+    const imageResult = await imageResponse.json();
+
+    if (!imageResult.success) {
+      console.error("ImgBB Error:", imageResult);
+
+      const imgbbMessage =
+        imageResult?.error?.message ??
+        (typeof imageResult?.error === "string"
+          ? imageResult.error
+          : null) ??
+        "Failed to upload image to ImgBB";
+
+      return res.status(500).send({
+        success: false,
+        message: imgbbMessage,
+      });
+    }
+
+    // ImgBB image URL
+    const imageUrl = imageResult.data.url;
+
+    // ===============================
+    // Create Service
+    // ===============================
 
     const newService = {
       title: service.title,
       category: service.category,
       description: service.description,
-      image: service.image,
+
+      // ImgBB URL
+      image: imageUrl,
+
       serviceMode: service.serviceMode,
       serviceArea: service.serviceArea,
       price: Number(service.price),
-      availability: service.availability || "available",
+
+      availability:
+        service.availability || "available",
 
       // Admin approval
       approvalStatus: "pending",
@@ -162,12 +278,24 @@ app.post('/services', async (req, res) => {
       updatedAt: new Date(),
     };
 
+    // ===============================
+    // Save to MongoDB
+    // ===============================
+
     const result = await services.insertOne(newService);
+
+    // ===============================
+    // Response
+    // ===============================
 
     res.status(201).send({
       success: true,
       message: "Service added successfully",
-      insertedId: result.insertedId,
+
+      service: {
+        _id: result.insertedId,
+        ...newService,
+      },
     });
 
   } catch (error) {
