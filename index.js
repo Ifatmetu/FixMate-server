@@ -74,7 +74,7 @@ const connectedClient = await connectToMongoDB();
 
 const database = connectedClient.db("FixMate");
 
-const users = database.collection("users");
+const users = database.collection("user");
 const services = database.collection("services");
 const bookings = database.collection("bookings");
 const payments = database.collection("payments");
